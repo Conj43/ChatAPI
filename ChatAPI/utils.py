@@ -24,54 +24,57 @@ load_dotenv()
 # define open ai api key
 openai_api_key = os.getenv('OPENAI_API_KEY')
 
+
+
 # initialize SQLite database
-conn = sqlite3.connect('chat_history.db', check_same_thread=False)
-cursor = conn.cursor()
+def init_db():
+    with sqlite3.connect('chat_history.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                conversation_id TEXT,
+                message TEXT,
+                role TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
 
+# Call init_db once to ensure the table structure exists
+init_db()
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    conversation_id TEXT,
-    message TEXT,
-    role TEXT,
-    state TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-''')
-conn.commit()
+def save_message(user_id: str, conversation_id: str, message: str, role: str):
+    with sqlite3.connect('chat_history.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO messages (user_id, conversation_id, message, role)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, conversation_id, message, role))
+        conn.commit()
 
-# saving messages and state
-def save_message(user_id: str, conversation_id: str, message: str, role: str, state: dict):
-    # cast as string
-    serialized_state = str(state) if state else ""  
-
-    cursor.execute('''
-    INSERT INTO messages (user_id, conversation_id, message, role, state)
-    VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, conversation_id, message, role, serialized_state))
-    conn.commit()
-
-    # only keep 20 most recent messages
-    cursor.execute('''
-    DELETE FROM messages WHERE id IN (
-        SELECT id FROM messages WHERE conversation_id = ?
-        ORDER BY timestamp DESC LIMIT 1 OFFSET 19
-    )
-    ''', (conversation_id,))
-    conn.commit()
+        # Only keep the 25 most recent messages for the conversation
+        cursor.execute('''
+            DELETE FROM messages WHERE id IN (
+                SELECT id FROM messages WHERE conversation_id = ?
+                ORDER BY timestamp DESC LIMIT 1 OFFSET 24
+            )
+        ''', (conversation_id,))
+        conn.commit()
 
 
 # retrieve messages from user id and conversation id
 def retrieve_messages(user_id: str, conversation_id: str):
-    cursor.execute('''
-    SELECT role, message, state FROM messages
-    WHERE user_id = ? AND conversation_id = ?
-    ORDER BY timestamp DESC
-    LIMIT 20
-    ''', (user_id, conversation_id))
-    return [{"role": row[0], "content": row[1], "state": row[2]} for row in cursor.fetchall()]
+    with sqlite3.connect('chat_history.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT role, message FROM messages
+            WHERE user_id = ? AND conversation_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 25
+        ''', (user_id, conversation_id))
+        return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
 
 
 
@@ -114,9 +117,9 @@ def create_graph(system_message, tools):
         response = llm_with_tools.invoke(all_messages)
 
         if state["messages"]:
-            save_message(user_id, conversation_id, state["messages"][-1].content, "user", state)
+            save_message(user_id, conversation_id, state["messages"][-1].content, "user")
         if response.content:
-            save_message(user_id, conversation_id, response.content, "assistant", state)
+            save_message(user_id, conversation_id, response.content, "assistant")
 
         return {"messages": [response]}
 
